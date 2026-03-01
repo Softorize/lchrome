@@ -15,6 +15,13 @@ function getRegistry(): ProviderRegistry {
 }
 
 export function setupProviderHandler(bus: MessageBus): void {
+  // Load providers from storage on startup
+  getRegistry().loadFromStorage().then(() => {
+    logger.info('Providers loaded from storage');
+  }).catch((err) => {
+    logger.error('Failed to load providers from storage', err);
+  });
+
   bus.on('provider:ping', async (payload: { providerId: string }) => {
     const provider = getRegistry().get(payload.providerId);
     if (!provider) return { success: false, error: 'Provider not found' };

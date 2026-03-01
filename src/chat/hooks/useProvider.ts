@@ -29,26 +29,63 @@ export function useProvider() {
   const updateProvider = useProviderStore((s) => s.updateProvider);
   const removeProvider = useProviderStore((s) => s.removeProvider);
 
-  // Load providers from storage on mount
+  // Load providers from storage on mount, auto-configure default if none exist
   useEffect(() => {
     async function loadProviders() {
       const result = await chrome.storage.local.get(['providers', 'activeProviderId', 'activeModelId']);
-      const storedProviders = (result.providers ?? []) as ProviderConfig[];
-      setProviders(storedProviders);
+      let storedProviders = (result.providers ?? []) as ProviderConfig[];
 
-      if (result.activeProviderId) {
-        setActiveProvider(result.activeProviderId);
-      } else if (storedProviders.length > 0) {
-        setActiveProvider(storedProviders[0].id);
+      // Auto-configure default LLaMA provider if no providers exist
+      if (storedProviders.length === 0) {
+        const defaultProvider: ProviderConfig = {
+          id: 'default-llama',
+          type: 'openai-compat',
+          name: 'LLaMA Server',
+          baseUrl: 'http://192.168.1.247:8081',
+          defaultModel: 'Qwen3.5-35B-A3B',
+          enabled: true,
+        };
+        storedProviders = [defaultProvider];
+        await chrome.storage.local.set({ providers: storedProviders });
       }
 
-      if (result.activeModelId) {
-        setActiveModel(result.activeModelId);
+      setProviders(storedProviders);
+
+      const providerId = result.activeProviderId ?? storedProviders[0]?.id;
+      if (providerId) {
+        setActiveProvider(providerId);
+
+        // Auto-fetch models for the active provider
+        try {
+          const modelResponse = await sendToBackground<{ models: ModelInfo[] }>(
+            'provider:list-models',
+            { providerId },
+          );
+          if (modelResponse.success && modelResponse.data?.models) {
+            setAvailableModels(modelResponse.data.models);
+
+            // Auto-select model
+            const savedModelId = result.activeModelId;
+            const provider = storedProviders.find((p) => p.id === providerId);
+            const models = modelResponse.data.models;
+
+            const modelToSelect =
+              models.find((m) => m.id === savedModelId) ??
+              models.find((m) => m.id === provider?.defaultModel) ??
+              models[0];
+
+            if (modelToSelect) {
+              setActiveModel(modelToSelect.id);
+            }
+          }
+        } catch {
+          // Models will be fetched when user selects provider
+        }
       }
     }
 
     loadProviders();
-  }, [setProviders, setActiveProvider, setActiveModel]);
+  }, [setProviders, setActiveProvider, setActiveModel, setAvailableModels]);
 
   // Persist active selections
   useEffect(() => {

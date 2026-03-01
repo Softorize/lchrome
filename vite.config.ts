@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from 'vite';
 import { resolve } from 'path';
 import { copyFileSync, cpSync, mkdirSync, existsSync } from 'fs';
+import tailwindcss from '@tailwindcss/vite';
 
 function copyManifestAndAssets(): Plugin {
   return {
@@ -65,5 +66,5 @@ export default defineConfig({
       },
     },
   },
-  plugins: [copyManifestAndAssets()],
+  plugins: [tailwindcss(), copyManifestAndAssets()],
 });
