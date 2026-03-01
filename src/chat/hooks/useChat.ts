@@ -1,9 +1,7 @@
 import { useCallback, useRef } from 'react';
 import { useChatStore } from '../store/chatSlice';
 import { useProviderStore } from '../store/providerSlice';
-import { useStreaming } from './useStreaming';
 import type { ChatMessageUI } from '../store/chatSlice';
-import type { ExtensionMessage, ExtensionResponse } from '@/types/messages';
 
 export function useChat() {
   const messages = useChatStore((s) => s.messages);
@@ -13,142 +11,175 @@ export function useChat() {
   const clearMessages = useChatStore((s) => s.clearMessages);
   const setLoading = useChatStore((s) => s.setLoading);
 
-  const activeProviderId = useProviderStore((s) => s.activeProviderId);
-  const activeModelId = useProviderStore((s) => s.activeModelId);
-
-  const { startStreaming, stopStreaming } = useStreaming();
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const sendMessage = useCallback(
     async (content: string) => {
-      if (!content.trim() || !activeProviderId || !activeModelId) return;
+      const providerId = useProviderStore.getState().activeProviderId;
+      const modelId = useProviderStore.getState().activeModelId;
+      const providers = useProviderStore.getState().providers;
 
+      if (!content.trim() || !providerId || !modelId) return;
+
+      const provider = providers.find((p) => p.id === providerId);
+      if (!provider) return;
+
+      // Add user message
       const userMessage: ChatMessageUI = {
         id: crypto.randomUUID(),
         role: 'user',
         content: content.trim(),
         timestamp: Date.now(),
       };
-
       addMessage(userMessage);
-      setLoading(true);
 
+      // Add placeholder assistant message
+      const assistantId = crypto.randomUUID();
       const assistantMessage: ChatMessageUI = {
-        id: crypto.randomUUID(),
+        id: assistantId,
         role: 'assistant',
         content: '',
         timestamp: Date.now(),
-        model: activeModelId,
+        model: modelId,
       };
-
       addMessage(assistantMessage);
+      setLoading(true);
 
       abortControllerRef.current = new AbortController();
 
       try {
-        const chatMessages = useChatStore
-          .getState()
-          .messages.filter((m) => m.role !== 'system' || m.content)
-          .map((m) => ({
-            role: m.role,
-            content: m.content,
-            toolCalls: m.toolCalls?.map((tc) => ({
-              id: tc.id,
-              name: tc.name,
-              arguments: tc.arguments,
-            })),
-          }));
+        // Build messages array for the API
+        const allMessages = useChatStore.getState().messages;
+        const apiMessages = allMessages
+          .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content))
+          .filter((m) => m.id !== assistantId)
+          .map((m) => ({ role: m.role, content: m.content }));
 
-        const requestPayload = {
-          providerId: activeProviderId,
-          request: {
-            model: activeModelId,
-            messages: chatMessages,
+        // Call the provider API directly
+        const url = provider.type === 'ollama'
+          ? `${provider.baseUrl}/api/chat`
+          : `${provider.baseUrl}/v1/chat/completions`;
+
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (provider.apiKey && provider.type !== 'ollama') {
+          if (provider.type === 'anthropic') {
+            headers['x-api-key'] = provider.apiKey;
+            headers['anthropic-version'] = '2023-06-01';
+          } else {
+            headers['Authorization'] = `Bearer ${provider.apiKey}`;
+          }
+        }
+
+        let body: Record<string, unknown>;
+
+        if (provider.type === 'ollama') {
+          body = {
+            model: modelId,
+            messages: apiMessages,
             stream: true,
-          },
-        };
-
-        const message: ExtensionMessage = {
-          type: 'provider:stream',
-          id: crypto.randomUUID(),
-          payload: requestPayload,
-          source: 'sidebar',
-        };
-
-        startStreaming(assistantMessage.id, abortControllerRef.current.signal);
-
-        const port = chrome.runtime.connect({ name: 'stream' });
-
-        port.onMessage.addListener((streamMsg) => {
-          if (streamMsg.type === 'stream:chunk' && streamMsg.chunk) {
-            const chunk = streamMsg.chunk;
-
-            if (chunk.type === 'text' && chunk.text) {
-              const current = useChatStore
-                .getState()
-                .messages.find((m) => m.id === assistantMessage.id);
-              updateMessage(assistantMessage.id, {
-                content: (current?.content ?? '') + chunk.text,
-              });
-            }
-
-            if (chunk.type === 'tool_call_start' && chunk.toolCall) {
-              const current = useChatStore
-                .getState()
-                .messages.find((m) => m.id === assistantMessage.id);
-              const existingCalls = current?.toolCalls ?? [];
-              updateMessage(assistantMessage.id, {
-                toolCalls: [
-                  ...existingCalls,
-                  {
-                    id: chunk.toolCall.id ?? crypto.randomUUID(),
-                    name: chunk.toolCall.name ?? '',
-                    arguments: chunk.toolCall.arguments ?? {},
-                    isExecuting: true,
-                  },
-                ],
-              });
-            }
-
-            if (chunk.type === 'usage' && chunk.usage) {
-              updateMessage(assistantMessage.id, {
-                usage: {
-                  promptTokens: chunk.usage.promptTokens,
-                  completionTokens: chunk.usage.completionTokens,
-                  totalTokens: chunk.usage.totalTokens,
-                },
-              });
-            }
+          };
+        } else if (provider.type === 'anthropic') {
+          const systemMsgs = apiMessages.filter((m) => m.role === 'system');
+          const nonSystemMsgs = apiMessages.filter((m) => m.role !== 'system');
+          body = {
+            model: modelId,
+            messages: nonSystemMsgs,
+            max_tokens: 4096,
+            stream: true,
+          };
+          if (systemMsgs.length > 0) {
+            body.system = systemMsgs.map((m) => m.content).join('\n');
           }
+        } else {
+          // OpenAI-compatible
+          body = {
+            model: modelId,
+            messages: apiMessages,
+            stream: true,
+          };
+        }
 
-          if (streamMsg.type === 'stream:done') {
-            setLoading(false);
-            stopStreaming();
-            port.disconnect();
-          }
-
-          if (streamMsg.type === 'stream:error') {
-            updateMessage(assistantMessage.id, {
-              content:
-                (useChatStore.getState().messages.find((m) => m.id === assistantMessage.id)
-                  ?.content ?? '') + `\n\n**Error:** ${streamMsg.error ?? 'Unknown error'}`,
-            });
-            setLoading(false);
-            stopStreaming();
-            port.disconnect();
-          }
+        const response = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          signal: abortControllerRef.current.signal,
         });
 
-        port.postMessage(message);
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => 'Unknown error');
+          throw new Error(`API error ${response.status}: ${errorText}`);
+        }
+
+        if (!response.body) {
+          throw new Error('No response body');
+        }
+
+        // Stream the response
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let accumulated = '';
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+
+            if (provider.type === 'ollama') {
+              // NDJSON format
+              if (!trimmed) continue;
+              try {
+                const chunk = JSON.parse(trimmed);
+                if (chunk.message?.content) {
+                  accumulated += chunk.message.content;
+                  updateMessage(assistantId, { content: accumulated });
+                }
+              } catch { /* skip */ }
+            } else {
+              // SSE format
+              if (!trimmed.startsWith('data: ')) continue;
+              const data = trimmed.slice(6);
+              if (data === '[DONE]') continue;
+              try {
+                const chunk = JSON.parse(data);
+                const delta = chunk.choices?.[0]?.delta;
+                if (delta?.content) {
+                  accumulated += delta.content;
+                  updateMessage(assistantId, { content: accumulated });
+                }
+              } catch { /* skip */ }
+            }
+          }
+        }
+
+        // Final update
+        if (accumulated) {
+          updateMessage(assistantId, { content: accumulated });
+        } else {
+          updateMessage(assistantId, { content: '_No response from model._' });
+        }
       } catch (error) {
-        updateMessage(assistantMessage.id, {
-          content: `**Error:** ${error instanceof Error ? error.message : 'Failed to send message'}`,
-        });
+        if ((error as Error).name === 'AbortError') {
+          // User cancelled
+        } else {
+          const currentContent = useChatStore.getState().messages.find((m) => m.id === assistantId)?.content ?? '';
+          updateMessage(assistantId, {
+            content: currentContent + `\n\n**Error:** ${error instanceof Error ? error.message : 'Failed to send message'}`,
+          });
+        }
+      } finally {
         setLoading(false);
-        stopStreaming();
+        abortControllerRef.current = null;
       }
     },
-    [activeProviderId, activeModelId, addMessage, updateMessage, setLoading, startStreaming, stopStreaming],
+    [addMessage, updateMessage, setLoading],
   );
 
   const stopGeneration = useCallback(() => {
@@ -156,20 +187,8 @@ export function useChat() {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
-
-    if (activeProviderId) {
-      const abortMessage: ExtensionMessage = {
-        type: 'provider:abort',
-        id: crypto.randomUUID(),
-        payload: { providerId: activeProviderId },
-        source: 'sidebar',
-      };
-      chrome.runtime.sendMessage(abortMessage);
-    }
-
     setLoading(false);
-    stopStreaming();
-  }, [activeProviderId, setLoading, stopStreaming]);
+  }, [setLoading]);
 
   const clearChat = useCallback(() => {
     clearMessages();

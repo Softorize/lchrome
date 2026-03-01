@@ -1,19 +1,52 @@
 import { useCallback, useEffect } from 'react';
 import { useProviderStore } from '../store/providerSlice';
 import type { ProviderConfig, ModelInfo } from '@/types/ai-provider';
-import type { ExtensionMessage, ExtensionResponse } from '@/types/messages';
 
-async function sendToBackground<T>(
-  type: ExtensionMessage['type'],
-  payload: unknown,
-): Promise<ExtensionResponse<T>> {
-  const message: ExtensionMessage = {
-    type,
-    id: crypto.randomUUID(),
-    payload,
-    source: 'sidebar',
-  };
-  return chrome.runtime.sendMessage(message);
+// Fetch models directly from the provider API (bypasses service worker messaging)
+async function fetchModelsDirectly(provider: ProviderConfig): Promise<ModelInfo[]> {
+  try {
+    let url: string;
+    let headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+    if (provider.type === 'ollama') {
+      url = `${provider.baseUrl}/api/tags`;
+    } else if (provider.type === 'google') {
+      url = `${provider.baseUrl}/v1beta/models${provider.apiKey ? `?key=${provider.apiKey}` : ''}`;
+    } else {
+      // OpenAI-compatible (openai, openai-compat, lmstudio, anthropic)
+      url = `${provider.baseUrl}/v1/models`;
+      if (provider.apiKey) {
+        headers['Authorization'] = `Bearer ${provider.apiKey}`;
+      }
+    }
+
+    const resp = await fetch(url, { headers });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+
+    if (provider.type === 'ollama') {
+      return (data.models ?? []).map((m: { name: string }) => ({
+        id: m.name,
+        name: m.name,
+        provider: provider.type,
+        supportsTools: true,
+        supportsStreaming: true,
+      }));
+    }
+
+    // OpenAI-compatible format
+    const models = data.data ?? data.models ?? [];
+    return models.map((m: { id?: string; name?: string }) => ({
+      id: m.id ?? m.name ?? 'unknown',
+      name: m.name ?? m.id ?? 'unknown',
+      provider: provider.type,
+      supportsTools: true,
+      supportsStreaming: true,
+    }));
+  } catch (error) {
+    console.error('Failed to fetch models:', error);
+    return [];
+  }
 }
 
 export function useProvider() {
@@ -29,13 +62,13 @@ export function useProvider() {
   const updateProvider = useProviderStore((s) => s.updateProvider);
   const removeProvider = useProviderStore((s) => s.removeProvider);
 
-  // Load providers from storage on mount, auto-configure default if none exist
+  // Load providers and auto-select model on mount
   useEffect(() => {
-    async function loadProviders() {
+    async function init() {
       const result = await chrome.storage.local.get(['providers', 'activeProviderId', 'activeModelId']);
       let storedProviders = (result.providers ?? []) as ProviderConfig[];
 
-      // Auto-configure default LLaMA provider if no providers exist
+      // Auto-configure default LLaMA provider if none exist
       if (storedProviders.length === 0) {
         const defaultProvider: ProviderConfig = {
           id: 'default-llama',
@@ -51,73 +84,55 @@ export function useProvider() {
 
       setProviders(storedProviders);
 
+      // Pick the active provider
       const providerId = result.activeProviderId ?? storedProviders[0]?.id;
-      if (providerId) {
-        setActiveProvider(providerId);
+      if (!providerId) return;
 
-        // Auto-fetch models for the active provider
-        try {
-          const modelResponse = await sendToBackground<{ models: ModelInfo[] }>(
-            'provider:list-models',
-            { providerId },
-          );
-          if (modelResponse.success && modelResponse.data?.models) {
-            setAvailableModels(modelResponse.data.models);
+      setActiveProvider(providerId);
+      const provider = storedProviders.find((p) => p.id === providerId);
+      if (!provider) return;
 
-            // Auto-select model
-            const savedModelId = result.activeModelId;
-            const provider = storedProviders.find((p) => p.id === providerId);
-            const models = modelResponse.data.models;
+      // Fetch models directly from API
+      const models = await fetchModelsDirectly(provider);
+      setAvailableModels(models);
 
-            const modelToSelect =
-              models.find((m) => m.id === savedModelId) ??
-              models.find((m) => m.id === provider?.defaultModel) ??
-              models[0];
+      // Auto-select model
+      const savedModelId = result.activeModelId;
+      const modelToSelect =
+        models.find((m) => m.id === savedModelId) ??
+        models.find((m) => m.id === provider.defaultModel) ??
+        models[0];
 
-            if (modelToSelect) {
-              setActiveModel(modelToSelect.id);
-            }
-          }
-        } catch {
-          // Models will be fetched when user selects provider
-        }
+      if (modelToSelect) {
+        setActiveModel(modelToSelect.id);
       }
     }
 
-    loadProviders();
+    init();
   }, [setProviders, setActiveProvider, setActiveModel, setAvailableModels]);
 
-  // Persist active selections
+  // Persist selections
   useEffect(() => {
-    if (activeProviderId) {
-      chrome.storage.local.set({ activeProviderId });
-    }
+    if (activeProviderId) chrome.storage.local.set({ activeProviderId });
   }, [activeProviderId]);
 
   useEffect(() => {
-    if (activeModelId) {
-      chrome.storage.local.set({ activeModelId });
-    }
+    if (activeModelId) chrome.storage.local.set({ activeModelId });
   }, [activeModelId]);
 
   const selectProvider = useCallback(
     async (providerId: string) => {
       setActiveProvider(providerId);
-      // Automatically refresh models when switching provider
-      const response = await sendToBackground<{ models: ModelInfo[] }>(
-        'provider:list-models',
-        { providerId },
-      );
-      if (response.success && response.data) {
-        setAvailableModels(response.data.models);
-        if (response.data.models.length > 0) {
-          const provider = providers.find((p) => p.id === providerId);
-          const defaultModel = provider?.defaultModel;
-          const modelToSelect =
-            response.data.models.find((m) => m.id === defaultModel) ??
-            response.data.models[0];
-          setActiveModel(modelToSelect.id);
-        }
+      const provider = providers.find((p) => p.id === providerId);
+      if (!provider) return;
+
+      const models = await fetchModelsDirectly(provider);
+      setAvailableModels(models);
+
+      if (models.length > 0) {
+        const modelToSelect =
+          models.find((m) => m.id === provider.defaultModel) ?? models[0];
+        setActiveModel(modelToSelect.id);
       }
     },
     [providers, setActiveProvider, setAvailableModels, setActiveModel],
@@ -132,33 +147,45 @@ export function useProvider() {
 
   const testConnection = useCallback(
     async (providerId: string): Promise<boolean> => {
-      const response = await sendToBackground<{ success: boolean }>(
-        'provider:ping',
-        { providerId },
-      );
-      return response.success && (response.data?.success ?? false);
+      const provider = providers.find((p) => p.id === providerId);
+      if (!provider) return false;
+      try {
+        const models = await fetchModelsDirectly(provider);
+        return models.length > 0;
+      } catch {
+        return false;
+      }
     },
-    [],
+    [providers],
   );
 
   const refreshModels = useCallback(
     async (providerId?: string): Promise<ModelInfo[]> => {
       const id = providerId ?? activeProviderId;
       if (!id) return [];
-
-      const response = await sendToBackground<{ models: ModelInfo[] }>(
-        'provider:list-models',
-        { providerId: id },
-      );
-
-      if (response.success && response.data) {
-        setAvailableModels(response.data.models);
-        return response.data.models;
-      }
-
-      return [];
+      const provider = providers.find((p) => p.id === id);
+      if (!provider) return [];
+      const models = await fetchModelsDirectly(provider);
+      setAvailableModels(models);
+      return models;
     },
-    [activeProviderId, setAvailableModels],
+    [providers, activeProviderId, setAvailableModels],
+  );
+
+  const saveProvider = useCallback(
+    (config: ProviderConfig) => {
+      const exists = providers.find((p) => p.id === config.id);
+      if (exists) {
+        updateProvider(config.id, config);
+      } else {
+        addProvider(config);
+      }
+      const updated = exists
+        ? providers.map((p) => (p.id === config.id ? config : p))
+        : [...providers, config];
+      chrome.storage.local.set({ providers: updated });
+    },
+    [providers, addProvider, updateProvider],
   );
 
   const activeProvider = providers.find((p) => p.id === activeProviderId) ?? null;
@@ -173,7 +200,7 @@ export function useProvider() {
     selectModel,
     testConnection,
     refreshModels,
-    addProvider,
+    addProvider: saveProvider,
     updateProvider,
     removeProvider,
   };
