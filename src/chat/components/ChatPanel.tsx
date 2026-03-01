@@ -13,11 +13,11 @@ export function ChatPanel() {
   const { activeProvider, activeModel } = useProvider();
 
   return (
-    <div className="flex flex-col h-screen bg-[var(--bg-primary)] text-[var(--text-primary)] relative">
+    <div className="flex flex-col h-full bg-[var(--bg-primary)] text-[var(--text-primary)] relative overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--border)] bg-[var(--bg-secondary)] shrink-0">
+      <header className="flex items-center justify-between px-3 py-2 border-b border-[var(--border)] bg-[var(--bg-secondary)] shrink-0">
         <div className="flex items-center gap-2 min-w-0 flex-1">
-          <span className="text-sm font-semibold text-[var(--accent)] shrink-0">
+          <span className="text-sm font-semibold text-[var(--accent)] shrink-0 select-none">
             OmniChrome
           </span>
           <ModelSelector />
@@ -25,7 +25,8 @@ export function ChatPanel() {
         <div className="flex items-center gap-1 shrink-0">
           <button
             onClick={clearChat}
-            className="p-1.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors duration-150"
+            aria-label="New chat"
             title="New chat"
           >
             <svg
@@ -39,7 +40,8 @@ export function ChatPanel() {
           </button>
           <button
             onClick={() => setSettingsOpen(!settingsOpen)}
-            className="p-1.5 rounded hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors duration-150"
+            aria-label="Open settings"
             title="Settings"
           >
             <svg
@@ -56,12 +58,12 @@ export function ChatPanel() {
             </svg>
           </button>
         </div>
-      </div>
+      </header>
 
       {/* Message area */}
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <main className="flex-1 min-h-0 overflow-hidden">
         <MessageList messages={messages} isLoading={isLoading} />
-      </div>
+      </main>
 
       {/* Input area */}
       <div className="shrink-0">
