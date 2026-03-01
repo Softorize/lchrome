@@ -118,19 +118,9 @@ export function useChat() {
         // Stream the response
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-        let reasoning = '';
-        let content = '';
+        let accumulated = '';
         let buffer = '';
-        let isReasoning = false;
-
-        const buildDisplay = () => {
-          let display = '';
-          if (reasoning) {
-            display += `<details><summary>💭 Thinking...</summary>\n\n${reasoning}\n\n</details>\n\n`;
-          }
-          display += content;
-          return display;
-        };
+        let stillThinking = true;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -144,13 +134,12 @@ export function useChat() {
             const trimmed = line.trim();
 
             if (provider.type === 'ollama') {
-              // NDJSON format
               if (!trimmed) continue;
               try {
                 const chunk = JSON.parse(trimmed);
                 if (chunk.message?.content) {
-                  content += chunk.message.content;
-                  updateMessage(assistantId, { content: buildDisplay() });
+                  accumulated += chunk.message.content;
+                  updateMessage(assistantId, { content: accumulated });
                 }
               } catch { /* skip */ }
             } else {
@@ -162,20 +151,12 @@ export function useChat() {
                 const chunk = JSON.parse(data);
                 const delta = chunk.choices?.[0]?.delta;
 
-                // Handle reasoning_content (Qwen, DeepSeek, etc.)
-                if (delta?.reasoning_content) {
-                  reasoning += delta.reasoning_content;
-                  if (!isReasoning) {
-                    isReasoning = true;
-                    updateMessage(assistantId, { content: '💭 *Thinking...*' });
-                  }
-                }
-
-                // Handle regular content
+                // Skip reasoning_content (Qwen, DeepSeek chain-of-thought)
+                // Only show the final content
                 if (delta?.content) {
-                  isReasoning = false;
-                  content += delta.content;
-                  updateMessage(assistantId, { content: buildDisplay() });
+                  if (stillThinking) stillThinking = false;
+                  accumulated += delta.content;
+                  updateMessage(assistantId, { content: accumulated });
                 }
               } catch { /* skip */ }
             }
@@ -183,9 +164,8 @@ export function useChat() {
         }
 
         // Final update
-        const finalContent = buildDisplay();
-        if (finalContent) {
-          updateMessage(assistantId, { content: finalContent });
+        if (accumulated) {
+          updateMessage(assistantId, { content: accumulated });
         } else {
           updateMessage(assistantId, { content: '_No response from model._' });
         }
