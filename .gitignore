@@ -1,0 +1,11 @@
+node_modules/
+dist/
+native-host/dist/
+native-host/node_modules/
+*.js.map
+.env
+.env.local
+coverage/
+.vscode/
+.idea/
+*.tsbuildinfo

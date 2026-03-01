@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "OmniChrome",
+  "version": "0.1.0",
+  "description": "Enterprise Chrome extension with multi-model AI and browser automation",
+  "permissions": [
+    "sidePanel",
+    "activeTab",
+    "tabs",
+    "tabGroups",
+    "storage",
+    "scripting",
+    "debugger",
+    "nativeMessaging",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "src/chat/sidebar.html"
+  },
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_title": "OmniChrome"
+  },
+  "content_scripts": [],
+  "web_accessible_resources": [
+    {
+      "resources": ["assets/*"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
+  "icons": {
+    "16": "assets/icons/icon16.png",
+    "32": "assets/icons/icon32.png",
+    "48": "assets/icons/icon48.png",
+    "128": "assets/icons/icon128.png"
+  },
+  "minimum_chrome_version": "116"
+}
